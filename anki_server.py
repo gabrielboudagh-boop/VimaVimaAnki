@@ -14,9 +14,10 @@ import os
 import json
 
 app = Flask(__name__)
-CORS(app)  # allows your React app to call this
+app.config["SERVER_NAME"] = None
+CORS(app, origins="*", allow_headers=["Content-Type"], methods=["GET","POST","OPTIONS"])
 
-# Stable IDs — never change these or Anki will duplicate cards
+# Stable IDs
 MODEL_ID = 1607392319
 DECK_IDS = {
     "USMLE": 2059400110,
@@ -64,31 +65,14 @@ BACK_TMPL = """
   </div>
   <hr>
   <table>
-    <tr>
-      <td class="label">Result</td>
-      <td class="{{ResultClass}}">{{Result}}</td>
-    </tr>
-    {{#Concept}}
-    <tr><td class="label">Concept</td><td style="color:#111;">{{Concept}}</td></tr>
-    {{/Concept}}
-    {{#Subject}}
-    <tr><td class="label">Subject</td><td style="color:#111;">{{Subject}}</td></tr>
-    {{/Subject}}
-    {{#QType}}
-    <tr><td class="label">Type</td><td style="color:#111;">{{QType}}</td></tr>
-    {{/QType}}
-    {{#Why}}
-    <tr><td class="label">Why</td><td style="color:#111;">{{Why}}</td></tr>
-    {{/Why}}
-    {{#Resource}}
-    <tr><td class="label">Review</td><td style="color:#3b82f6; font-weight:500;">{{Resource}}</td></tr>
-    {{/Resource}}
-    {{#Notes}}
-    <tr><td class="label">Notes</td><td style="color:#374151; font-style:italic;">{{Notes}}</td></tr>
-    {{/Notes}}
-    {{#Session}}
-    <tr><td class="label">Session</td><td style="color:#9ca3af; font-size:12px;">{{Session}}</td></tr>
-    {{/Session}}
+    <tr><td class="label">Result</td><td class="{{ResultClass}}">{{Result}}</td></tr>
+    {{#Concept}}<tr><td class="label">Concept</td><td style="color:#111;">{{Concept}}</td></tr>{{/Concept}}
+    {{#Subject}}<tr><td class="label">Subject</td><td style="color:#111;">{{Subject}}</td></tr>{{/Subject}}
+    {{#QType}}<tr><td class="label">Type</td><td style="color:#111;">{{QType}}</td></tr>{{/QType}}
+    {{#Why}}<tr><td class="label">Why</td><td style="color:#111;">{{Why}}</td></tr>{{/Why}}
+    {{#Resource}}<tr><td class="label">Review</td><td style="color:#3b82f6;font-weight:500;">{{Resource}}</td></tr>{{/Resource}}
+    {{#Notes}}<tr><td class="label">Notes</td><td style="color:#374151;font-style:italic;">{{Notes}}</td></tr>{{/Notes}}
+    {{#Session}}<tr><td class="label">Session</td><td style="color:#9ca3af;font-size:12px;">{{Session}}</td></tr>{{/Session}}
   </table>
 </div>
 """
@@ -98,120 +82,71 @@ def make_model(mode):
         MODEL_ID,
         f"VIMA VIMA · {mode}",
         fields=[
-            {"name": "Front"},
-            {"name": "Result"},
-            {"name": "ResultClass"},
-            {"name": "Concept"},
-            {"name": "Subject"},
-            {"name": "QType"},
-            {"name": "Why"},
-            {"name": "Resource"},
-            {"name": "Notes"},
-            {"name": "Session"},
-            {"name": "Mode"},
+            {"name": "Front"}, {"name": "Result"}, {"name": "ResultClass"},
+            {"name": "Concept"}, {"name": "Subject"}, {"name": "QType"},
+            {"name": "Why"}, {"name": "Resource"}, {"name": "Notes"},
+            {"name": "Session"}, {"name": "Mode"},
         ],
-        templates=[{
-            "name": "VIMA VIMA Card",
-            "qfmt": FRONT_TMPL,
-            "afmt": BACK_TMPL,
-        }],
+        templates=[{"name": "VIMA VIMA Card", "qfmt": FRONT_TMPL, "afmt": BACK_TMPL}],
         css=CARD_CSS,
     )
 
+@app.after_request
+def add_cors_headers(response):
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    return response
 
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok", "service": "VIMA VIMA Anki Export"})
 
-
-@app.route("/export/apkg", methods=["POST"])
+@app.route("/export/apkg", methods=["POST", "OPTIONS"])
 def export_apkg():
-    """
-    POST /export/apkg
-    Body (JSON):
-    {
-      "deck_name": "NBME 13",
-      "mode": "USMLE",
-      "questions": [
-        {
-          "ankiFront": "55M jaw claudication + vision loss → next step?",
-          "result": "correct",
-          "correctReason": "Right reasoning",
-          "wrongReason": "",
-          "concept": "Giant cell arteritis",
-          "subject": "Cardiology",
-          "qtype": "Diagnosis",
-          "resource": "FA p.301",
-          "notes": "",
-          "session": "NBME 13"
-        }, ...
-      ]
-    }
-    Returns: .apkg binary file
-    """
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+
     try:
         data = request.get_json(force=True)
         deck_name = data.get("deck_name", "VIMA VIMA Deck")
         mode = data.get("mode", "USMLE")
         questions = data.get("questions", [])
-
-        # Filter to only questions that have an ankiFront
         cards = [q for q in questions if q.get("ankiFront", "").strip()]
 
         if not cards:
-            return jsonify({"error": "No flashcards found. Log questions with a 1-liner to create cards."}), 400
+            return jsonify({"error": "No flashcards found."}), 400
 
         model = make_model(mode)
-        deck_id = DECK_IDS.get(mode, 2059400110)
-        deck = genanki.Deck(deck_id, f"VIMA VIMA · {deck_name}")
+        deck = genanki.Deck(DECK_IDS.get(mode, 2059400110), f"VIMA VIMA · {deck_name}")
 
         for q in cards:
             is_correct = q.get("result") == "correct"
-            result_label = "✓  Correct" if is_correct else "✗  Incorrect"
-            result_class = "correct" if is_correct else "incorrect"
             why = q.get("correctReason", "") if is_correct else q.get("wrongReason", "")
-
-            note = genanki.Note(
-                model=model,
-                fields=[
-                    q.get("ankiFront", ""),
-                    result_label,
-                    result_class,
-                    q.get("concept", ""),
-                    q.get("subject", ""),
-                    q.get("qtype", ""),
-                    why,
-                    q.get("resource", ""),
-                    q.get("notes", ""),
-                    q.get("session", deck_name),
-                    mode,
-                ],
-            )
+            note = genanki.Note(model=model, fields=[
+                q.get("ankiFront", ""),
+                "✓  Correct" if is_correct else "✗  Incorrect",
+                "correct" if is_correct else "incorrect",
+                q.get("concept", ""), q.get("subject", ""), q.get("qtype", ""),
+                why, q.get("resource", ""), q.get("notes", ""),
+                q.get("session", deck_name), mode,
+            ])
             deck.add_note(note)
 
-        # Write to temp file and return
-        with tempfile.NamedTemporaryFile(suffix=".apkg", delete=False) as tmp:
-            tmp_path = tmp.name
-
+        tmp = tempfile.NamedTemporaryFile(suffix=".apkg", delete=False)
+        tmp_path = tmp.name
+        tmp.close()
         genanki.Package(deck).write_to_file(tmp_path)
 
         safe_name = deck_name.replace(" ", "_").replace("/", "-")
-        return send_file(
-            tmp_path,
-            mimetype="application/octet-stream",
-            as_attachment=True,
-            download_name=f"VIMAVIMA_{safe_name}.apkg",
-        )
-
+        return send_file(tmp_path, mimetype="application/octet-stream",
+                        as_attachment=True, download_name=f"VIMAVIMA_{safe_name}.apkg")
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     finally:
         try:
-            if 'tmp_path' in locals():
-                os.unlink(tmp_path)
-        except:
-            pass
-
+            if 'tmp_path' in locals(): os.unlink(tmp_path)
+        except: pass
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
